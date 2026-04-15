@@ -17,12 +17,10 @@ firebase_admin.initialize_app(cred, {'databaseURL': os.getenv("FIREBASE_DB_URL")
 def run_cloudflared():
     print("☁️ [Manager] Cloudflare 터널을 백그라운드에서 실행합니다...")
     
-    # 🌟 안전장치: 파일이 제대로 있는지 먼저 확인
     if not os.path.exists("cloudflared.exe"):
-        print("❌ [Manager] 오류: 현재 폴더에 'cloudflared.exe' 파일이 없습니다! 파일 이름이나 위치를 확인해주세요.")
+        print("❌ [Manager] 오류: 현재 폴더에 'cloudflared.exe' 파일이 없습니다!")
         return
 
-    # 🌟 윈도우 환경에 맞춰 subprocess 실행 방식 완벽 개선 (shell=False, 인코딩 에러 무시)
     process = subprocess.Popen(
         ["cloudflared.exe", "tunnel", "--url", "http://localhost:8000"],
         stdout=subprocess.PIPE,
@@ -32,22 +30,45 @@ def run_cloudflared():
         errors='ignore'
     )
 
-    # 쏟아지는 로그를 한 줄씩 읽으며 감시
-    for line in process.stdout:
-        # 정규식(Regex)을 사용해 trycloudflare 주소만 정확히 낚아챔
-        match = re.search(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", line)
-        if match:
-            cloud_url = match.group(0)
-            print(f"\n🌍 [Manager] 터널 주소 획득 성공!: {cloud_url}")
+    try:
+        for line in process.stdout:
+            match = re.search(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", line)
+            if match:
+                cloud_url = match.group(0)
+                print(f"\n🌍 [Manager] 터널 주소 획득 성공!: {cloud_url}")
+                
+                try:
+                    ref = db.reference('server_status')
+                    # online 상태 업데이트
+                    ref.update({'backend_url': cloud_url, 'status': 'online'})
+                    print("🚀 [Manager] Firebase 자동 동기화 완료!")
+                except Exception as e:
+                    print(f"❌ [Manager] Firebase 업데이트 실패: {e}")
+                
+                print("\n⏳ 터널이 활성화되었습니다. (종료하려면 터미널에서 Ctrl+C를 누르세요)\n")
+                break # URL을 찾았으므로 로그 출력 감시 루프는 종료
+
+        # 🌟 핵심: 스크립트가 바로 종료되지 않고 프로세스가 끝날 때까지 대기합니다.
+        process.wait()
+
+    except KeyboardInterrupt:
+        # 사용자가 터미널 창에서 Ctrl+C를 누르면 실행됨
+        print("\n🛑 [Manager] 사용자에 의해 터널이 종료됩니다...")
+        
+    finally:
+        # 🌟 우아한 종료 (Clean up)
+        if process.poll() is None: # 아직 프로세스가 살아있다면 강제 종료
+            process.terminate()
+            process.wait() # 완전히 죽을 때까지 잠깐 대기
+        
+        try: # Firebase 상태를 오프라인으로 원복
+            ref = db.reference('server_status')
+            ref.update({'status': 'offline'})
+            print("💤 [Manager] Firebase 상태를 'offline'으로 변경했습니다.")
+        except Exception as e:
+            pass
             
-            # 낚아챈 주소를 Firebase에 즉시 쏨
-            try:
-                ref = db.reference('server_status')
-                ref.update({'backend_url': cloud_url, 'status': 'online'})
-                print("🚀 [Manager] Firebase 자동 동기화 완료!\n")
-            except Exception as e:
-                print(f"❌ [Manager] Firebase 업데이트 실패: {e}")
-            break # 목적을 달성했으니 감시 종료!
+        print("👋 [Manager] 프로그램이 안전하게 종료되었습니다.")
 
 if __name__ == "__main__":
     # 1. 터널 실행 및 주소 훔치기 작업을 별도의 쓰레드(백그라운드)로 지시

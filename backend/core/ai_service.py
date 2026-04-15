@@ -1,47 +1,94 @@
 import requests
 import json
+import re
 
 class AIService:
     def __init__(self, model="gemma2:2b"):
-        # Ollama 로컬 API 주소 (기본값)
         self.url = "http://localhost:11434/api/generate"
         self.model = model
 
     def parse_semantic(self, user_input):
-        """
-        사용자의 자연어를 분석하여 객체(Object)와 속성(Attribute)을 JSON으로 추출합니다.
-        """
-        # Gemma에게 내리는 정밀한 지시문(Prompt)
         prompt = f"""
-        당신은 영상 분석 시스템의 세맨틱 파서(Semantic Parser)입니다.
-        사용자의 입력 문장에서 '물체(object)', '색상(color)', '기타 특징(attributes)'을 추출해 JSON으로만 응답하세요.
+        당신은 Vision AI 시스템(Grounding DINO)을 위한 '계층적 공간 파서(Hierarchical Spatial Parser)'입니다.
+        사용자의 요청을 분석하여 최종적으로 크롭할 '메인 타겟(main_target)'과, 이를 기하학적으로 검증할 '단서들(clues)'로 완벽하게 분해하세요.
+        결과는 반드시 영어로 번역해야 하며, 아래의 [규칙]을 엄격하게 따르는 순수 JSON 형식으로만 응답하세요.
 
-        [규칙]
-        1. 결과는 반드시 정형화된 JSON 형식이어야 합니다.
-        2. 물체(object)는 반드시 영어 단어 하나로 번역하세요 (예: 자동차 -> car).
-        3. 색상(color)이 없으면 null로 표시하세요.
-        4. 다른 설명은 하지 말고 오직 JSON만 출력하세요.
+        [핵심 규칙]
+        1. 메인 타겟(main_target) 단수화: '사람들', '무리' 등 복수형 요구가 있어도 반드시 단수형(예: person, car, dog)으로 출력하세요.
+        2. 역전 관계 무시: '차 안의 강아지'처럼 크기가 큰 객체 안에 작은 객체가 있어도, 사용자가 최종적으로 원하는 것을 main_target으로 삼으세요.
+        3. 단일 객체 처리: '독수리', '사과'처럼 아무런 수식어나 단서가 없는 단일 객체 요청일 경우, clues는 빈 배열([])을 반환하세요. 단순 색상('빨간 사과')도 main_target에 합치고 clues는 비우세요.
+        4. 포함/제외(Condition): 각 단서가 반드시 있어야 하면 "include", 없어야 하면 "exclude"로 표시하세요.
+        5. 관계성(Relation) 추론: 메인 타겟과 단서 사이의 물리적/공간적 관계를 추론하여 "inside" (안에 있음), "wearing" (입고/쓰고 있음), "holding" (들고 있음), "next_to" (옆에 있음), "none" 중 하나로 지정하세요.
 
-        [예시]
-        입력: "길거리에 서 있는 빨간색 버스" -> {{"object": "bus", "color": "red", "attributes": ["standing"]}}
-        
+        [JSON 출력 포맷 예시]
+        입력: "독수리" (단일 객체)
+        출력: {{
+            "main_target": "eagle",
+            "clues": []
+        }}
+
+        입력: "빨간 모자를 쓰고 파란 가방을 들고 있는 사람"
+        출력: {{
+            "main_target": "person",
+            "clues": [
+                {{"target": "red hat", "condition": "include", "relation": "wearing"}},
+                {{"target": "blue bag", "condition": "include", "relation": "holding"}}
+            ]
+        }}
+
+        입력: "자동차 안에 있는 강아지 무리"
+        출력: {{
+            "main_target": "dog",
+            "clues": [
+                {{"target": "car", "condition": "include", "relation": "inside"}}
+            ]
+        }}
+
+        입력: "나무 옆에 서 있는 안경을 쓰지 않은 남자"
+        출력: {{
+            "main_target": "man",
+            "clues": [
+                {{"target": "tree", "condition": "include", "relation": "next_to"}},
+                {{"target": "glasses", "condition": "exclude", "relation": "wearing"}}
+            ]
+        }}
+
         입력: "{user_input}"
-        JSON:
+        출력:
         """
+
+        data = {"model": self.model, "prompt": prompt, "stream": False}
 
         try:
-            # 💡 stream=False로 설정해야 응답이 다 올 때까지 기다렸다가 한 번에 받습니다.
-            response = requests.post(self.url, json={
-                "model": self.model,
-                "prompt": prompt,
-                "stream": False,
-                "format": "json" 
-            })
+            response = requests.post(self.url, json=data)
+            response.raise_for_status()
+            text_response = response.json().get("response", "")
             
-            # Ollama의 응답 파싱
-            result_text = response.json().get("response", "{}")
-            return json.loads(result_text)
+            # JSON 텍스트만 안전하게 추출
+            match = re.search(r'\{.*\}', text_response.replace('\n', ''))
+            if match:
+                return json.loads(match.group(0))
+            return {"main_target": "object", "clues": []}
             
         except Exception as e:
-            print(f"❌ Gemma 분석 중 오류 발생: {e}")
-            return None
+            print(f"❌ [AIService] 분석 실패: {e}")
+            return {"main_target": "object", "clues": []}
+        
+        
+if __name__ == "__main__":
+    # 테스트를 위한 객체 생성
+    service = AIService()
+    
+    test_inputs = [
+        "독수리",
+        "차 안에 있는 강아지",
+        "빨간 모자를 쓴 사람",
+        "나무 옆에 있는 고양이"
+    ]
+    
+    print("🚀 Gemma 세맨틱 분석 테스트 시작...\n")
+    for text in test_inputs:
+        result = service.parse_semantic(text)
+        print(f"입력: {text}")
+        print(f"결과: {json.dumps(result, indent=4, ensure_ascii=False)}")
+        print("-" * 30)

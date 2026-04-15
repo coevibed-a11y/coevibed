@@ -54,4 +54,6 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
 list.txt
+structure.txt

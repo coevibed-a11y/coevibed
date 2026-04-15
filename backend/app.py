@@ -87,21 +87,14 @@ async def mine_video(
 
     print(f"🌐 웹 요청 수신: {request.target_label}")
     
-    # 🌟 [Step 1] Gemma에게 문장 분석 요청 (Semantic Parsing)
-    # 사용자의 입력(예: "모자를 쓴 사람")을 구조화된 데이터로 변환합니다.
-    parsed = ai_service.parse_semantic(request.target_label)
+    # 🌟 [수정 포인트 1] 루프 밖에서 딱 한 번만 번역합니다! (Gemma 과로 방지 및 이전 JSON 코드 제거)
+    parsed_data = ai_service.parse_semantic(request.target_label)
+    main_target = parsed_data.get("main_target", "object")
     
-    if parsed and parsed.get("object"):
-        target_obj = parsed["object"]
-        target_color = parsed.get("color")
-        target_attrs = parsed.get("attributes", [])
-        print(f"🧠 Gemma 분석 완료 -> 물체: {target_obj}, 색상: {target_color}, 속성: {target_attrs}")
-    else:
-        # Gemma 분석 실패 시 대비책 (Fallback): 입력값을 그대로 사용
-        target_obj = request.target_label
-        target_color = None
-        target_attrs = []
-        print("⚠️ Gemma 분석 실패, 원본 텍스트를 그대로 사용합니다.")
+    print(f"🧠 [Gemma 전략] JSON 분석 완료: {parsed_data}")
+    
+    # 파일명은 main_target 기반으로 생성
+    safe_label = main_target.replace(" ", "_").replace("/", "")
 
     # 유튜브 스트림 주소 획득
     stream_url = yt_streamer.get_direct_url(request.youtube_url)
@@ -129,16 +122,11 @@ async def mine_video(
             print("🛑 [수확 종료] 설정한 종료 시간에 도달했습니다.")
             break 
             
-        # 🌟 비전 엔진 호출: 쪼개진 정보를 바탕으로 정밀 탐지 및 필터링 수행
+        # 🌟 [수정 포인트 2] 여기서는 이미 번역된 target_prompt만 넘겨서 엔진 연산에만 집중!
         cropped_images = engine.crop_target(
             frame, 
-            target_object=target_obj, 
-            target_color=target_color,
-            target_attributes=target_attrs
+            parsed_json=parsed_data  
         )
-        
-        # 파일 저장용 안전한 이름 생성
-        safe_label = target_obj.replace(" ", "_")
         
         for crop_img in cropped_images:
             # 중복 제거 활성화 시 아래 주석 해제
@@ -151,7 +139,7 @@ async def mine_video(
             
             # 최대 수확량 도달 시 처리
             if total_crops >= request.max_crops:
-                engine.close_debug_video()
+                # engine.close_debug_video() # (사용하지 않는 더미 함수이므로 제거해도 무방합니다)
                 zip_filename = file_mgr.create_zip_and_cleanup()
                 
                 return {
@@ -167,8 +155,6 @@ async def mine_video(
         zip_url = f"dataset/{zip_filename}"
     else:
         zip_url = None
-
-    engine.close_debug_video()
 
     return {
         "status": "success", 

@@ -103,4 +103,4 @@ graph TD
 이 프로젝트는 **MIT License**를 따릅니다.
 
 ---
-© 2026 [aboutKGT]. Built with passion and AI.
+© 2026 [coevibed]. Built with passion and AI.

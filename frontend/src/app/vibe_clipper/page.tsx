@@ -7,7 +7,7 @@ export default function Home() {
   // === 상태 관리 ===
   const [youtubeUrl, setYoutubeUrl] = useState('');
   const [startTime, setStartTime] = useState('00:00:00');
-  const [endTime, setEndTime] = useState('00:05:00');
+  const [endTime, setEndTime] = useState('00:01:00');
   
   // 🌟 스마트 타겟 상태 (자유 입력 지원)
   const [displayTarget, setDisplayTarget] = useState('');
@@ -215,7 +215,7 @@ export default function Home() {
                   value={endTime}
                   onChange={(e) => setEndTime(e.target.value)}
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-blue-500"
-                  placeholder="00:05:00"
+                  placeholder="00:01:00"
                 />
               </div>
             </div>

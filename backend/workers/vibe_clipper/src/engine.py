@@ -1,197 +1,186 @@
 import cv2
-import os
+import torch
+import torchvision
 import numpy as np
-from ultralytics import YOLO, SAM
-from datetime import datetime
+from PIL import Image
+from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
+from ultralytics import SAM
 
 class VibeClipperEngine:
-    def __init__(self):
-        print("⏳ Vibe 아키텍처 엔진 시동 중... (Semantic Worker Mode)")
+    def __init__(self, device="cuda" if torch.cuda.is_available() else "cpu"):
+        self.device = device
+        print(f"⏳ Vibe 계층적 공간 검증 엔진 시동 중... (Device: {self.device})")
         
-        # 통합 모델 폴더에서 가중치 로드
-        self.detector = YOLO("models/yolov8s-world.pt") 
-        self.detector.to("cuda")
+        # 1. Grounding DINO 
+        model_id = "IDEA-Research/grounding-dino-tiny" 
+        self.dino_processor = AutoProcessor.from_pretrained(model_id)
+        self.dino_model = AutoModelForZeroShotObjectDetection.from_pretrained(model_id).to(self.device)
         
+        # 2. SAM 
         self.segmenter = SAM("models/sam2_b.pt") 
-        self.segmenter.to("cuda")
+        self.segmenter.to(self.device)
         
-        self.debug = False 
-        self.video_writer = None
+        # 💡 CLIP 모델은 제거되었습니다! (메모리 절약 & 연산 속도 2배 향상)
+        print("✅ 텍스트 기반 공간 검증 엔진 시동 완료!")
+
+    def _calculate_intersection(self, boxA, boxB):
+        """[핵심 수학] 두 박스의 교집합 면적 및 포함 비율(IoM, IoC)을 계산합니다."""
+        xA = max(boxA[0], boxB[0])
+        yA = max(boxA[1], boxB[1])
+        xB = min(boxA[2], boxB[2])
+        yB = min(boxA[3], boxB[3])
+
+        interArea = max(0, xB - xA) * max(0, yB - yA)
+        areaA = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
+        areaB = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
+
+        if areaA == 0 or areaB == 0:
+            return 0, 0
+
+        iom = interArea / areaA  # Main 박스 대비 교집합 비율
+        ioc = interArea / areaB  # Clue 박스 대비 교집합 비율
+        return iom, ioc
+
+    def crop_target(self, image: np.ndarray, parsed_json: dict):
+        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        pil_image = Image.fromarray(rgb_image)
         
-        print("✅ 비전 엔진 시동 완료 (분석 기능은 중앙 AI Hub로 위임됨)")
+        # Gemma가 넘겨준 JSON 데이터 파싱 및 🌟 무조건 소문자로 강제 변환
+        main_target = parsed_json.get("main_target", "object").lower()
+        clues = parsed_json.get("clues", [])
+        for c in clues:
+            c["target"] = c["target"].lower()
 
-    # ==========================================
-    # 🧠 Filter 1: 공간 포함 관계 필터 (Spatial Overlap)
-    # ==========================================
-    def _check_overlap(self, parent_box, child_box, threshold=0.3):
-        """
-        부모 박스(예: 사람) 영역 내부에 자식 박스(예: 모자, 가방)가 존재하는지 수학적으로 계산합니다.
-        이를 통해 '가방을 멘 사람' 같은 동적 형태 속성을 하드코딩 없이 걸러냅니다.
-        """
-        px1, py1, px2, py2 = parent_box
-        cx1, cy1, cx2, cy2 = child_box
-
-        # 겹치는 교집합 영역의 좌표 계산
-        ix1 = max(px1, cx1)
-        iy1 = max(py1, cy1)
-        ix2 = min(px2, cx2)
-        iy2 = min(py2, cy2)
-
-        # 겹치는 영역의 넓이
-        inter_width = max(0, ix2 - ix1)
-        inter_height = max(0, iy2 - iy1)
-        inter_area = inter_width * inter_height
-
-        # 자식 박스(예: 모자)의 원래 넓이
-        child_area = (cx2 - cx1) * (cy2 - cy1)
-
-        if child_area == 0:
-            return False
-
-        # 자식 박스 면적 대비 겹치는 비율이 threshold(30%) 이상이면 착용/소지한 것으로 판정!
-        overlap_ratio = inter_area / child_area
-        return overlap_ratio > threshold
-
-    # ==========================================
-    # 🧠 Filter 2: 픽셀 기반 색상 필터 (Color Attribute)
-    # ==========================================
-    def _is_target_color(self, crop_img, crop_mask, target_color):
-        """
-        SAM이 정밀하게 따낸 누끼(Mask) 영역 내부의 픽셀만 HSV 공간에서 분석하여 색상을 판별합니다.
-        배경(아스팔트 등)의 색상 노이즈를 완벽하게 차단합니다.
-        """
-        if target_color not in ["white", "black", "red", "blue", "yellow", "green"]:
-            return True # 시스템에 정의되지 않은 색상이면 일단 관대하게 통과
-
-        hsv_img = cv2.cvtColor(crop_img, cv2.COLOR_BGR2HSV)
-        masked_hsv = hsv_img[crop_mask > 0]
+        # 🟢 [1. Detection] DINO에게 메인 타겟과 단서들을 한 번에 모두 찾게 함
+        search_phrases = [main_target] + [c["target"] for c in clues]
+        dino_prompt = " . ".join(search_phrases) + " ." 
         
-        if len(masked_hsv) == 0:
-            return False
-
-        # 색상별 HSV 범위 정의
-        if target_color == "white":
-            lower_bound = np.array([0, 0, 180])
-            upper_bound = np.array([180, 50, 255])
-        elif target_color == "black":
-            lower_bound = np.array([0, 0, 0])
-            upper_bound = np.array([180, 255, 50])
-        elif target_color == "red":
-            lower_bound = np.array([0, 100, 100])
-            upper_bound = np.array([10, 255, 255])
-        elif target_color == "blue":
-            lower_bound = np.array([100, 150, 0])
-            upper_bound = np.array([140, 255, 255])
-        else:
-            return True 
-
-        # 설정한 색상 범위에 들어가는 픽셀 개수 계산
-        color_match_mask = cv2.inRange(np.expand_dims(masked_hsv, axis=0), lower_bound, upper_bound)
-        match_ratio = cv2.countNonZero(color_match_mask) / len(masked_hsv)
-
-        # 타겟 색상이 객체 면적의 20% 이상을 차지하면 합격
-        return match_ratio > 0.2
-
-    # ==========================================
-    # 🚀 Main Pipeline: 객체 수확 및 필터링
-    # ==========================================
-    def crop_target(self, img_array, target_object, target_color=None, target_attributes=None):
-        if target_attributes is None:
-            target_attributes = []
+        inputs = self.dino_processor(images=pil_image, text=dino_prompt, return_tensors="pt").to(self.device)
+        with torch.no_grad():
+            outputs = self.dino_model(**inputs)
             
-        cropped_images = []
+        dino_results = self.dino_processor.post_process_grounded_object_detection(
+            outputs, inputs.input_ids, target_sizes=[pil_image.size[::-1]]
+        )[0]
         
-        # 1. 탐지 세팅: 부모 객체(사람)와 요구되는 자식 속성(모자, 가방 등)을 모두 찾으라고 지시
-        search_classes = [target_object] + target_attributes
-        self.detector.set_classes(search_classes) 
-
-        detection_results = self.detector.predict(
-            img_array, device="cuda", conf=0.15, imgsz=1280, verbose=False
-        )
+        boxes = dino_results["boxes"].cpu().numpy()
+        scores = dino_results["scores"].cpu().numpy()
+        labels = dino_results.get("text_labels", dino_results.get("labels"))
         
-        # [디버그] 영상 녹화 로직
-        if self.debug:
-            annotated_frame = detection_results[0].plot()
-            if self.video_writer is None:
-                base_dir = "data"
-                os.makedirs(base_dir, exist_ok=True)
-                filename = f"debug_video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
-                save_path = os.path.join(base_dir, filename)
-                height, width, _ = annotated_frame.shape
-                self.video_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), 5.0, (width, height))
-            self.video_writer.write(annotated_frame)
+        valid_indices = scores >= 0.2
+        boxes = boxes[valid_indices]
+        scores = scores[valid_indices] # 🌟 점수도 같이 필터링!
+        labels = [labels[i] for i, valid in enumerate(valid_indices) if valid]
 
-        # 2. 박스 분류: 부모 박스와 속성(자식) 박스를 따로 분류하여 저장
-        parent_boxes = []
-        attr_boxes_list = {attr: [] for attr in target_attributes}
+        if len(boxes) == 0:
+            print(f"👀 [DINO] 탐색 실패: 프롬프트 '{dino_prompt}'에 해당하는 객체가 화면에 없습니다.")
+            return []
 
-        for det in detection_results[0].boxes:
-            class_id = int(det.cls[0])
-            box_coords = det.xyxy[0].cpu().numpy()
-            detected_label = search_classes[class_id]
+        main_boxes = []
+        clue_boxes_dict = {c["target"]: [] for c in clues}
+        main_norm = main_target.replace("-", " ")
+        
+        # 🌟 [폭탄 1 해체] zip에 scores 추가 및 튜플로 저장!
+        for box, score, label in zip(boxes, scores, labels):
+            label_norm = label.lower().replace("-", " ")
+            if main_norm in label_norm:
+                main_boxes.append((box, score)) # 박스와 점수 함께 보관
+            for c in clues:
+                c_norm = c["target"].replace("-", " ")
+                if c_norm in label_norm:
+                    clue_boxes_dict[c["target"]].append(box)
+        
+        if not main_boxes:
+            print(f"👀 [DINO] '{main_target}' (메인 타겟) 박스를 하나도 찾지 못했습니다.")
+            return []
 
-            if detected_label == target_object:
-                parent_boxes.append(box_coords)
-            elif detected_label in attr_boxes_list:
-                attr_boxes_list[detected_label].append(box_coords)
-
-        # 3. 공간 필터링 (Spatial Validation): 
-        # 부모 박스 안에 요구된 속성 박스가 모두 겹쳐서 존재하는 녀석만 최종 후보로 선발
-        filtered_parent_boxes = []
-        for p_box in parent_boxes:
-            passed_all_attributes = True
+        # 🟢 [2. 공간 기하학적 검증] 
+        img_area = image.shape[0] * image.shape[1] 
+        valid_main_boxes = []
+        valid_main_scores = []
+        
+        for m_box, m_score in main_boxes:
+            w, h = m_box[2] - m_box[0], m_box[3] - m_box[1]
             
-            for attr in target_attributes:
-                attr_passed = False
-                for a_box in attr_boxes_list[attr]:
-                    if self._check_overlap(p_box, a_box): # 겹치는지 확인!
-                        attr_passed = True
-                        break 
+            if w == 0 or h == 0: continue
+            if (h / w > 10.0) or (w / h > 10.0): continue 
+            if (w * h) < (img_area * 0.001): continue
+
+            is_valid = True
+            
+            for clue in clues:
+                clue_target = clue["target"]
+                condition = clue["condition"]
+                relation = clue.get("relation", "none")
                 
-                if not attr_passed:
-                    passed_all_attributes = False
-                    break # 요구한 속성 중 하나라도 없으면 이 부모 객체는 버림
+                found_match = False
+                for c_box in clue_boxes_dict[clue_target]:
+                    iom, ioc = self._calculate_intersection(m_box, c_box)
+                    
+                    if relation in ["inside", "wearing", "holding"]:
+                        if iom > 0.25 or ioc > 0.25:
+                            found_match = True
+                            break
+                    elif relation == "next_to":
+                        m_center = np.array([(m_box[0]+m_box[2])/2, (m_box[1]+m_box[3])/2])
+                        c_center = np.array([(c_box[0]+c_box[2])/2, (c_box[1]+c_box[3])/2])
+                        dist = np.linalg.norm(m_center - c_center)
+                        diag = np.sqrt(w**2 + h**2)
+                        if dist < (diag * 1.5) or iom > 0.1:
+                            found_match = True
+                            break
+                    elif relation == "none":
+                        if iom > 0.1 or ioc > 0.1:
+                            found_match = True
+                            break
+                
+                if condition == "include" and not found_match:
+                    is_valid = False 
+                    break
+                elif condition == "exclude" and found_match:
+                    is_valid = False 
+                    break
+                    
+            if is_valid:
+                valid_main_boxes.append(m_box)
+                valid_main_scores.append(m_score) # 점수 저장
+
+        if not valid_main_boxes:
+            print(f"👀 [공간 검증] 메인 타겟은 찾았으나, 단서(clues) 조건을 만족하지 못해 최종 탈락했습니다.")
+            return []
             
-            if passed_all_attributes:
-                filtered_parent_boxes.append(p_box)
-
-        # 통과한 부모 객체가 없다면 여기서 조기 종료
-        if not filtered_parent_boxes:
-            return cropped_images
-
-        # 4. 정밀 누끼 (SAM Segmentation)
-        seg_results = self.segmenter(
-            img_array, bboxes=filtered_parent_boxes, device="cuda", verbose=False
-        )
-
+        # 🌟 [폭탄 2 해체] NMS에서 평등주의(torch.ones) 폐기, DINO의 원본 점수(Confidence) 활용!
+        boxes_tensor = torch.tensor(valid_main_boxes, dtype=torch.float32)
+        scores_tensor = torch.tensor(valid_main_scores, dtype=torch.float32) 
+        
+        nms_indices = torchvision.ops.nms(boxes_tensor, scores_tensor, iou_threshold=0.6)
+        final_boxes = boxes_tensor[nms_indices].numpy()
+        print(f"🎯 [공간 검증 합격] '{main_target}' 최종 객체 {len(final_boxes)}개 추출!")
+            
+        # 🟢 [3. Segmentation] 합격한 박스만 누끼 따기
+        seg_results = self.segmenter(image, bboxes=final_boxes, verbose=False)
+        
+        final_crops = []
         for result in seg_results:
-            if result.masks is None:
-                continue
+            if result.masks is None: continue
             masks = result.masks.data.cpu().numpy()
+            orig_boxes = result.boxes.xyxy.cpu().numpy()
             
-            for mask in masks:
-                ys, xs = (mask > 0).nonzero()
-                if len(xs) == 0 or len(ys) == 0:
-                    continue
+            for idx, mask in enumerate(masks):
+                x1, y1, x2, y2 = map(int, orig_boxes[idx])
                 
-                x1, x2 = xs.min(), xs.max()
-                y1, y2 = ys.min(), ys.max()
-
-                crop_img = img_array[y1:y2, x1:x2]
-                crop_mask = mask[y1:y2, x1:x2]
-
-                # 5. 속성 필터링 (Color Validation): 지정된 색상이 있다면 최종 검사
-                if target_color:
-                    if not self._is_target_color(crop_img, crop_mask, target_color):
-                        continue # 색상이 다르면 버림
-
-                # 모든 고난의 필터를 통과한 에셋 수확!
-                cropped_images.append(crop_img)
-
-        return cropped_images
+                crop_img = image[y1:y2, x1:x2]
+                mask_numeric = mask.astype(np.uint8)
+                
+                # 🌟 [폭탄 3 해체] 압축 버그 수정! 캔버스 전체로 먼저 펼치고, 박스만큼 가위로 오려내기!
+                full_mask = cv2.resize(mask_numeric, (image.shape[1], image.shape[0]))
+                mask_crop = full_mask[y1:y2, x1:x2]
+                
+                bgra = cv2.cvtColor(crop_img, cv2.COLOR_BGR2BGRA)
+                bgra[:, :, 3] = mask_crop * 255
+                final_crops.append(bgra)
+                
+        return final_crops
 
     def close_debug_video(self):
-        if self.video_writer is not None:
-            self.video_writer.release()
-            self.video_writer = None
-            print("🛑 디버그 비디오 녹화가 안전하게 저장되었습니다.")
+        pass
