@@ -110,14 +110,13 @@ export default function Home() {
     try {
       let currentBackendUrl = backendUrl;
       if (!currentBackendUrl) {
-        // 🌟 [수정 포인트] 주소 끝에 반드시 /server_status.json 을 붙여야 합니다!
-        // 환경 변수에 이미 .json이 포함되어 있다면 중복되지 않게 주의하세요.
-        const firebaseUrl = `${process.env.NEXT_PUBLIC_FIREBASE_URL}/server_status.json`;
+        // 🌟 [수정 포인트] 주소 끝에 ?t=시간값을 달아서 매번 새로운 요청인 것처럼 브라우저를 속입니다!
+        const firebaseUrl = `${process.env.NEXT_PUBLIC_FIREBASE_URL}/server_status.json?t=${Date.now()}`;
         
-        const firebaseRes = await fetch(firebaseUrl);
+        // 🌟 [수정 포인트] Next.js 자체 캐시도 완전히 끕니다!
+        const firebaseRes = await fetch(firebaseUrl, { cache: 'no-store' });
         const firebaseData = await firebaseRes.json();
         
-        // run.py에서 ref.update({'backend_url': ...}) 로 저장했으므로 데이터 구조 확인
         currentBackendUrl = firebaseData?.backend_url; 
         setBackendUrl(currentBackendUrl);
         

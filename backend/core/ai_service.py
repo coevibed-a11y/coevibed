@@ -1,92 +1,97 @@
-import requests
 import json
-import re
+import os
+import time
+from google import genai
+from dotenv import load_dotenv
+
+# 환경 변수 로드 (.env 파일에 GEMINI_API_KEY가 있어야 합니다)
+load_dotenv()
 
 class AIService:
-    def __init__(self, model="gemma2:2b"):
-        self.url = "http://localhost:11434/api/generate"
-        self.model = model
+    """
+    Gemini API를 활용하여 사용자의 자연어 명령을 
+    Vision 엔진(DINO)이 이해할 수 있는 공간 기하학적 JSON으로 파싱하는 모듈입니다.
+    """
+    def __init__(self, model_name="gemini-2.5-flash"):
+        # processor.py의 로직 차용: GenAI 클라이언트 안전 초기화
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            raise ValueError("🚨 .env 파일에 GEMINI_API_KEY가 설정되지 않았습니다!")
+        
+        self.client = genai.Client(api_key=api_key)
+        self.model_name = model_name # 속도가 미치도록 빠른 flash 모델 추천!
 
     def parse_semantic(self, user_input):
         prompt = f"""
-        당신은 Vision AI 시스템(Grounding DINO)을 위한 '계층적 공간 파서(Hierarchical Spatial Parser)'입니다.
-        사용자의 요청을 분석하여 최종적으로 크롭할 '메인 타겟(main_target)'과, 이를 기하학적으로 검증할 '단서들(clues)'로 완벽하게 분해하세요.
-        결과는 반드시 영어로 번역해야 하며, 아래의 [규칙]을 엄격하게 따르는 순수 JSON 형식으로만 응답하세요.
+        당신은 Vision AI 시스템을 위한 '계층적 공간 파서(Hierarchical Spatial Parser)'입니다.
+        결과는 반드시 영어로 번역해야 하며, 아래 규칙을 엄격하게 지키는 순수 JSON만 출력하세요.
 
         [핵심 규칙]
-        1. 메인 타겟(main_target) 단수화: '사람들', '무리' 등 복수형 요구가 있어도 반드시 단수형(예: person, car, dog)으로 출력하세요.
-        2. 역전 관계 무시: '차 안의 강아지'처럼 크기가 큰 객체 안에 작은 객체가 있어도, 사용자가 최종적으로 원하는 것을 main_target으로 삼으세요.
-        3. 단일 객체 처리: '독수리', '사과'처럼 아무런 수식어나 단서가 없는 단일 객체 요청일 경우, clues는 빈 배열([])을 반환하세요. 단순 색상('빨간 사과')도 main_target에 합치고 clues는 비우세요.
-        4. 포함/제외(Condition): 각 단서가 반드시 있어야 하면 "include", 없어야 하면 "exclude"로 표시하세요.
-        5. 관계성(Relation) 추론: 메인 타겟과 단서 사이의 물리적/공간적 관계를 추론하여 "inside" (안에 있음), "wearing" (입고/쓰고 있음), "holding" (들고 있음), "next_to" (옆에 있음), "none" 중 하나로 지정하세요.
+        1. main_target: 수식어가 없는 순수 명사(예: person, cat, car).
+        2. shape: "vertical", "horizontal", "slender", "square" 중 택 1.
+        3. clues: 단서 배열.
+           - target: 단서 이름 (예: white, hat, tree, dog)
+           - condition: 반드시 "include" 또는 "exclude" 중 하나만 선택!
+           - relation: 반드시 "inside", "wearing", "holding", "next_to", "none" 중 하나만 선택!
+           - type: 물리적 사물이면 "object", 단순 색상이면 "color".
 
-        [JSON 출력 포맷 예시]
-        입력: "독수리" (단일 객체)
-        출력: {{
-            "main_target": "eagle",
-            "clues": []
-        }}
+        [학습용 예시 (Few-Shot)]
+        입력: "차 안에 있는 강아지"
+        출력: {{"main_target": "dog", "shape": "vertical", "clues": [{{"target": "car", "condition": "include", "relation": "inside", "type": "object"}}]}}
 
-        입력: "빨간 모자를 쓰고 파란 가방을 들고 있는 사람"
-        출력: {{
-            "main_target": "person",
-            "clues": [
-                {{"target": "red hat", "condition": "include", "relation": "wearing"}},
-                {{"target": "blue bag", "condition": "include", "relation": "holding"}}
-            ]
-        }}
+        입력: "빨간 모자를 쓴 사람"
+        출력: {{"main_target": "person", "shape": "vertical", "clues": [{{"target": "red", "condition": "include", "relation": "none", "type": "color"}}, {{"target": "hat", "condition": "include", "relation": "wearing", "type": "object"}}]}}
 
-        입력: "자동차 안에 있는 강아지 무리"
-        출력: {{
-            "main_target": "dog",
-            "clues": [
-                {{"target": "car", "condition": "include", "relation": "inside"}}
-            ]
-        }}
+        입력: "나무 옆에 있는 하얀색 고양이"
+        출력: {{"main_target": "cat", "shape": "vertical", "clues": [{{"target": "white", "condition": "include", "relation": "none", "type": "color"}}, {{"target": "tree", "condition": "include", "relation": "next_to", "type": "object"}}]}}
 
-        입력: "나무 옆에 서 있는 안경을 쓰지 않은 남자"
-        출력: {{
-            "main_target": "man",
-            "clues": [
-                {{"target": "tree", "condition": "include", "relation": "next_to"}},
-                {{"target": "glasses", "condition": "exclude", "relation": "wearing"}}
-            ]
-        }}
+        입력: "가방을 들고 있는 사람 (우산은 제외)"
+        출력: {{"main_target": "person", "shape": "vertical", "clues": [{{"target": "bag", "condition": "include", "relation": "holding", "type": "object"}}, {{"target": "umbrella", "condition": "exclude", "relation": "none", "type": "object"}}]}}
 
         입력: "{user_input}"
         출력:
         """
 
-        data = {"model": self.model, "prompt": prompt, "stream": False}
+        # processor.py의 지수 백오프(Exponential Backoff) 및 마크다운 정제 로직 차용
+        max_retries = 3 
+        base_wait_time = 1 
 
-        try:
-            response = requests.post(self.url, json=data)
-            response.raise_for_status()
-            text_response = response.json().get("response", "")
-            
-            # JSON 텍스트만 안전하게 추출
-            match = re.search(r'\{.*\}', text_response.replace('\n', ''))
-            if match:
-                return json.loads(match.group(0))
-            return {"main_target": "object", "clues": []}
-            
-        except Exception as e:
-            print(f"❌ [AIService] 분석 실패: {e}")
-            return {"main_target": "object", "clues": []}
+        for attempt in range(max_retries):
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=prompt
+                )
+                
+                # LLM 응답 텍스트에 포함될 수 있는 불필요한 마크다운 태그 정제
+                text = response.text.strip()
+                if text.startswith("```json"):
+                    text = text[7:]
+                if text.endswith("```"):
+                    text = text[:-3]
+                
+                return json.loads(text.strip())
+
+            except Exception as e:
+                wait_time = base_wait_time * (2 ** attempt)
+                print(f"⚠️ [AIService] API 오류 발생 ({e})... {wait_time}초 후 재시도 ({attempt + 1}/{max_retries})")
+                time.sleep(wait_time)
         
-        
+        print(f"❌ [AIService] 최종 실패: 분석을 건너뜁니다.")
+        return {"main_target": "object", "clues": []}
+
 if __name__ == "__main__":
-    # 테스트를 위한 객체 생성
+    # 테스트 코드
     service = AIService()
     
     test_inputs = [
-        "독수리",
-        "차 안에 있는 강아지",
-        "빨간 모자를 쓴 사람",
-        "나무 옆에 있는 고양이"
+        "하얀색 고양이 (강아지는 제외)",
+        "노란색 우산을 쓰고 있는 사람",
+        "검을 들고 있는 기사",
+        "꽃밭에 앉아 있는 나비"
     ]
     
-    print("🚀 Gemma 세맨틱 분석 테스트 시작...\n")
+    print("🚀 Gemini 세맨틱 분석 테스트 시작...\n")
     for text in test_inputs:
         result = service.parse_semantic(text)
         print(f"입력: {text}")
