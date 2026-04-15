@@ -94,12 +94,31 @@ export default function Home() {
 
     setIsLoading(true);
 
+    // try {
+    //   let currentBackendUrl = backendUrl;
+    //   if (!currentBackendUrl) {
+    //     const firebaseRes = await fetch(process.env.NEXT_PUBLIC_FIREBASE_URL as string);
+    //     const firebaseData = await firebaseRes.json();
+    //     currentBackendUrl = firebaseData?.backend_url;
+    //     setBackendUrl(currentBackendUrl);
+        
+    //     if (!currentBackendUrl) {
+    //       throw new Error("AI 엔진(백엔드)이 오프라인 상태입니다. 엔진을 켜주세요.");
+    //     }
+    //   }
+
     try {
       let currentBackendUrl = backendUrl;
       if (!currentBackendUrl) {
-        const firebaseRes = await fetch(process.env.NEXT_PUBLIC_FIREBASE_URL as string);
+        // 🌟 [수정 포인트] 주소 끝에 반드시 /server_status.json 을 붙여야 합니다!
+        // 환경 변수에 이미 .json이 포함되어 있다면 중복되지 않게 주의하세요.
+        const firebaseUrl = `${process.env.NEXT_PUBLIC_FIREBASE_URL}/server_status.json`;
+        
+        const firebaseRes = await fetch(firebaseUrl);
         const firebaseData = await firebaseRes.json();
-        currentBackendUrl = firebaseData?.backend_url;
+        
+        // run.py에서 ref.update({'backend_url': ...}) 로 저장했으므로 데이터 구조 확인
+        currentBackendUrl = firebaseData?.backend_url; 
         setBackendUrl(currentBackendUrl);
         
         if (!currentBackendUrl) {
