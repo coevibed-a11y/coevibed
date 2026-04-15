@@ -1,0 +1,56 @@
+# ==========================================
+# 🐍 Backend (Python / AI)
+# ==========================================
+# 가상환경 및 캐시
+backend/venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/.pytest_cache/
+backend/.ipynb_checkpoints/
+
+# 보안 및 설정 파일 (절대 업로드 금지)
+backend/.env
+backend/firebase-adminsdk.json
+
+# 대용량 모델 파일 (Git 용량 제한 방지)
+backend/models/*.pt
+backend/models/*.onnx
+
+# 실행 파일 및 바이너리
+backend/cloudflared.exe
+
+# 수확 데이터 및 디버그 결과물 (개인 데이터)
+backend/data/
+backend/dataset/
+
+
+# ==========================================
+# ⚛️ Frontend (Next.js / Node)
+# ==========================================
+# 의존성 및 빌드 결과물
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+
+# 보안 파일
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+
+# Vercel 설정 및 로그
+frontend/.vercel/
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+
+
+# ==========================================
+# 💻 System / IDE
+# ==========================================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
