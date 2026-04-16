@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
+import Link from 'next/link';
 import { TARGET_DICTIONARY } from './constants/targetDictionary';
 
 export default function Home() {
@@ -9,7 +10,6 @@ export default function Home() {
   const [startTime, setStartTime] = useState('00:00:00');
   const [endTime, setEndTime] = useState('00:01:00');
   
-  // 🌟 스마트 타겟 상태 (자유 입력 지원)
   const [displayTarget, setDisplayTarget] = useState('');
   const [actualTarget, setActualTarget] = useState(''); 
   const [suggestions, setSuggestions] = useState<typeof TARGET_DICTIONARY>([]);
@@ -20,9 +20,11 @@ export default function Home() {
   const [error, setError] = useState('');
   const [backendUrl, setBackendUrl] = useState('');
 
+  // 🌟 챗봇 UI 상태
+  const [isChatOpen, setIsChatOpen] = useState(false);
+
   const autocompleteRef = useRef<HTMLDivElement>(null);
 
-  // 화면 밖 클릭 시 드롭다운 닫기
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (autocompleteRef.current && !autocompleteRef.current.contains(event.target as Node)) {
@@ -33,11 +35,10 @@ export default function Home() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // 🌟 타겟 검색 로직 (자유 입력 허용)
   const handleTargetChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
     setDisplayTarget(value);
-    setActualTarget(value); // 사용자가 입력한 값 그대로를 일단 실제 타겟으로 설정!
+    setActualTarget(value);
     
     if (value.length > 0) {
       const filtered = TARGET_DICTIONARY.filter(item => 
@@ -52,7 +53,7 @@ export default function Home() {
 
   const selectTarget = (label: string, text: string) => {
     setDisplayTarget(text);
-    setActualTarget(label); // 사전에 있는 걸 고르면 영어 라벨(bird 등)로 덮어씀
+    setActualTarget(label);
     setShowSuggestions(false);
   };
 
@@ -65,7 +66,18 @@ export default function Home() {
     return seconds;
   };
 
-  // 수확 시작!
+  // 🌟 파일명에서 Track ID 추출 및 그룹화
+  const groupFilesByTrack = (files: string[]) => {
+    const groups: { [key: string]: string[] } = {};
+    files.forEach(file => {
+      const match = file.match(/_tr(\d+)_/);
+      const trackId = match ? match[1] : 'unknown';
+      if (!groups[trackId]) groups[trackId] = [];
+      groups[trackId].push(file);
+    });
+    return groups;
+  };
+
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setError('');
@@ -75,45 +87,25 @@ export default function Home() {
     const endSec = parseTimeToSeconds(endTime);
     
     if (isNaN(startSec) || isNaN(endSec)) {
-      setError('시간 형식이 잘못되었습니다. (예: 01:20 또는 00:01:20)');
+      setError('시간 형식이 잘못되었습니다. (예: 01:20)');
       return;
     }
     if (startSec >= endSec) {
       setError('🚨 시작 시간이 종료 시간보다 같거나 늦을 수 없습니다!');
       return;
     }
-
     if (!actualTarget) {
       setError('수확할 타겟을 입력해 주세요.');
       return;
     }
-    
-    // 🌟 족쇄 해제: 사전에 없는 단어라도 에러를 띄우지 않고 그대로 통과시킵니다!
-    // 사용자가 'white bird'라고 치면 그 값을 finalTarget으로 사용합니다.
-    const finalTarget = actualTarget; 
 
     setIsLoading(true);
-
-    // try {
-    //   let currentBackendUrl = backendUrl;
-    //   if (!currentBackendUrl) {
-    //     const firebaseRes = await fetch(process.env.NEXT_PUBLIC_FIREBASE_URL as string);
-    //     const firebaseData = await firebaseRes.json();
-    //     currentBackendUrl = firebaseData?.backend_url;
-    //     setBackendUrl(currentBackendUrl);
-        
-    //     if (!currentBackendUrl) {
-    //       throw new Error("AI 엔진(백엔드)이 오프라인 상태입니다. 엔진을 켜주세요.");
-    //     }
-    //   }
 
     try {
       let currentBackendUrl = backendUrl;
       if (!currentBackendUrl) {
-        // 🌟 [수정 포인트] 주소 끝에 ?t=시간값을 달아서 매번 새로운 요청인 것처럼 브라우저를 속입니다!
+        // 🌟 [수정 완료] Firebase URL 404 에러 해결 (/server_status.json 추가)
         const firebaseUrl = `${process.env.NEXT_PUBLIC_FIREBASE_URL}/server_status.json?t=${Date.now()}`;
-        
-        // 🌟 [수정 포인트] Next.js 자체 캐시도 완전히 끕니다!
         const firebaseRes = await fetch(firebaseUrl, { cache: 'no-store' });
         const firebaseData = await firebaseRes.json();
         
@@ -134,7 +126,7 @@ export default function Home() {
         },
         body: JSON.stringify({
           youtube_url: youtubeUrl,
-          target_label: finalTarget, // YOLO-World로 향하는 자유 텍스트!
+          target_label: actualTarget,
           max_crops: 50,
           start_time: startTime,
           end_time: endTime,
@@ -142,7 +134,6 @@ export default function Home() {
       });
 
       const data = await response.json();
-      
       if (response.ok) {
         setResult(data);
       } else {
@@ -155,19 +146,56 @@ export default function Home() {
     }
   };
 
+  // 🌟 트랙 삭제 API 호출
+  const handleDeleteTrack = async (trackId: string) => {
+    if (trackId === 'unknown') return;
+    
+    try {
+      const response = await fetch(`${backendUrl}/api/delete-track`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.NEXT_PUBLIC_VIBE_API_KEY as string,
+        },
+        body: JSON.stringify({ track_id: parseInt(trackId) }),
+      });
+
+      const data = await response.json();
+      if (response.ok) {
+        // 🌟 [수정 완료] 삭제 성공 시, 남은 파일과 "필터링된 ZIP URL"을 업데이트!
+        setResult((prev: any) => ({
+          ...prev,
+          message: data.message,
+          files: data.files,
+          filtered_zip_url: data.filtered_zip_url 
+        }));
+      } else {
+        alert("삭제 중 오류가 발생했습니다.");
+      }
+    } catch (err) {
+      alert("서버 연결에 실패했습니다.");
+    }
+  };
+
   return (
-    <main className="min-h-screen bg-gray-950 text-white p-8 font-sans">
-      <div className="max-w-4xl mx-auto space-y-8">
-        
+    <main className="min-h-screen bg-gray-950 text-white p-8 font-sans relative">
+      
+      {/* 🌟 좌측 상단 홈 버튼 */}
+      <Link href="/" className="absolute top-8 left-8 flex items-center gap-2 text-gray-400 hover:text-white transition-colors bg-gray-900/50 px-4 py-2 rounded-full border border-gray-800">
+        <span className="text-xl">🏠</span>
+        <span className="font-semibold text-sm">Back to Hub</span>
+      </Link>
+
+      <div className="max-w-4xl mx-auto space-y-8 mt-12">
         <header className="text-center space-y-4">
           <h1 className="text-4xl font-extrabold bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">
             Vibe-Clipper V2
           </h1>
-          <p className="text-gray-400">Open-Vocabulary AI 에셋 수확 파이프라인</p>
+          <p className="text-gray-400">객체 추적 기반 스마트 선별 수확 시스템</p>
         </header>
 
+        {/* --- 폼 영역 --- */}
         <form onSubmit={handleSubmit} className="bg-gray-900 p-6 rounded-2xl shadow-xl border border-gray-800 space-y-6">
-          
           <div className="space-y-2">
             <label className="text-sm font-semibold text-gray-300">📺 유튜브 URL</label>
             <input
@@ -181,7 +209,6 @@ export default function Home() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 relative" ref={autocompleteRef}>
-            {/* 🌟 수정된 타겟 입력기: 자유 입력 강조 */}
             <div className="space-y-2 relative">
               <label className="text-sm font-semibold text-gray-300">🎯 수확할 타겟 (자유 입력)</label>
               <input
@@ -190,12 +217,11 @@ export default function Home() {
                 value={displayTarget}
                 onChange={handleTargetChange}
                 onFocus={() => displayTarget && setShowSuggestions(true)}
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-purple-500 transition-all placeholder-gray-500"
-                placeholder="예: 예: 빨간 모자를 쓴 사람, 하얀 자동차..."
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-purple-500 transition-all"
+                placeholder="예: 빨간 모자를 쓴 사람..."
               />
-              {/* 🌟 사용자 경험(UX)을 위한 영어 권장 팁 추가 */}
               <p className="text-xs text-gray-500 mt-1 pl-1">
-                💡 팁: 한국어로 입력하면 AI 에이전트가 문맥을 파악해 타겟을 찾아냅니다.
+                💡 한국어로 입력하면 AI가 문맥을 파악해 정확히 타겟팅합니다.
               </p>
               
               {showSuggestions && suggestions.length > 0 && (
@@ -244,78 +270,115 @@ export default function Home() {
           <button
             type="submit"
             disabled={isLoading}
-            className="w-full py-4 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white font-bold rounded-lg shadow-lg hover:shadow-xl transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="w-full py-4 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white font-bold rounded-lg shadow-lg transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isLoading ? (
-              <span className="animate-pulse">⏳ 프롬프트 분석 및 에셋 수확 중... (최대 수십 초 소요)</span>
+              <span className="animate-pulse">⏳ AI 분석 및 픽셀 필터링 중... (수십 초 소요)</span>
             ) : (
-              <span>🚀 AI 수확 시작</span>
+              <span>🚀 스마트 수확 시작</span>
             )}
           </button>
         </form>
 
+        {/* --- 결과 표시 영역 (그룹화, 이중 다운로드 버튼 적용) --- */}
         {result && (
           <div className="bg-gray-900 p-6 rounded-2xl shadow-xl border border-gray-800 space-y-6 animate-fade-in-up">
-            
-            <div className="flex flex-col md:flex-row items-center justify-between gap-4">
-              <h2 className="text-2xl font-bold text-green-400">✨ {result.message}</h2>
+            <div className="flex flex-col md:flex-row items-center justify-between gap-4 border-b border-gray-800 pb-4">
+              <h2 className="text-xl font-bold text-green-400">✨ {result.message}</h2>
               
-              {result.zip_url && result.files.length > 0 && (
-                <a 
-                  href={`${backendUrl}/${result.zip_url}`}
-                  download
-                  className="px-6 py-3 bg-green-600 hover:bg-green-500 text-white font-bold rounded-full shadow-lg transition-all flex items-center gap-2"
-                >
-                  📦 전체 다운로드 (ZIP)
-                </a>
-              )}
+              <div className="flex gap-3">
+                {/* 🌟 원본 전체 다운로드 버튼 */}
+                {result.zip_url && (
+                  <a 
+                    href={`${backendUrl}/${result.zip_url}`}
+                    download
+                    className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm font-bold rounded-lg transition-all"
+                  >
+                    📦 원본 전체 ZIP
+                  </a>
+                )}
+                
+                {/* 🌟 필터링된 ZIP 다운로드 버튼 (오탐지 삭제를 한 번이라도 했을 때만 나타남!) */}
+                {result.filtered_zip_url && (
+                  <a 
+                    href={`${backendUrl}/${result.filtered_zip_url}`}
+                    download
+                    className="px-4 py-2 bg-green-600 hover:bg-green-500 text-white text-sm font-bold rounded-lg shadow-lg transition-all animate-fade-in-up"
+                  >
+                    🎯 필터링 완료 ZIP
+                  </a>
+                )}
+              </div>
             </div>
 
             {result.files && result.files.length > 0 ? (
-              <>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="md:col-span-2 h-64 md:h-96 relative rounded-xl overflow-hidden bg-gray-800 group">
-                    <img 
-                      src={`${backendUrl}/${result.files[0]}?t=${Date.now()}`} 
-                      alt="Main Crop" 
-                      className="w-full h-full object-contain group-hover:scale-105 transition-transform duration-500"
-                    />
-                  </div>
-                  
-                  <div className="grid grid-cols-2 gap-4 md:col-span-1">
-                    {result.files.slice(1, 5).map((file: string, index: number) => (
-                      <div key={index} className="h-32 md:h-44 relative rounded-xl overflow-hidden bg-gray-800 group">
-                        <img 
-                          src={`${backendUrl}/${file}?t=${Date.now()}`} 
-                          alt={`Crop ${index + 1}`} 
-                          className="w-full h-full object-contain group-hover:scale-110 transition-transform duration-500"
-                        />
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                {/* 파일을 Track ID별로 그룹화하여 렌더링 */}
+                {Object.entries(groupFilesByTrack(result.files)).map(([trackId, filesArr]) => (
+                  <div key={trackId} className="relative group bg-gray-800 rounded-xl overflow-hidden border border-gray-700">
+                    
+                    {/* 대표 이미지 1장만 표시 */}
+                    <div className="h-40 relative">
+                      <img 
+                        src={`${backendUrl}/${filesArr[0]}?t=${Date.now()}`} 
+                        alt={`Track ${trackId}`} 
+                        className="w-full h-full object-contain"
+                      />
+                      <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                        <button 
+                          onClick={() => handleDeleteTrack(trackId)}
+                          className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white text-sm font-bold rounded-lg shadow-lg transform translate-y-4 group-hover:translate-y-0 transition-all"
+                        >
+                          🗑️ 오탐지 일괄 삭제
+                        </button>
                       </div>
-                    ))}
+                    </div>
+                    
+                    <div className="p-3 bg-gray-800 flex justify-between items-center border-t border-gray-700">
+                      <span className="text-xs font-mono text-purple-400 bg-purple-900/30 px-2 py-1 rounded">ID: {trackId}</span>
+                      <span className="text-xs text-gray-400">{filesArr.length}장 수확됨</span>
+                    </div>
                   </div>
-                </div>
-                
-                {result.files.length > 5 && (
-                  <div className="text-center space-y-1 mt-4">
-                    <p className="text-gray-400 text-sm font-medium">
-                      * 서버 안정성을 위해 회당 최대 수확량은 50장으로 제한됩니다.
-                    </p>
-                    <p className="text-gray-500 text-xs">
-                      위 이미지는 미리보기이며, 전체 50장의 데이터는 ZIP 파일로 확인하세요.
-                    </p>
-                  </div>
-                )}
-              </>
+                ))}
+              </div>
             ) : (
               <div className="py-12 flex flex-col items-center justify-center bg-gray-800/50 rounded-xl border border-gray-700 border-dashed">
                 <span className="text-5xl mb-4">🪹</span>
-                <p className="text-gray-300 font-semibold">해당 구간에서 타겟을 발견하지 못했습니다.</p>
-                <p className="text-gray-500 text-sm mt-2">다른 유튜브 영상이나, 타겟이 더 명확히 등장하는 시간대를 설정해 보세요.</p>
+                <p className="text-gray-300 font-semibold">저장된 데이터가 없습니다.</p>
               </div>
             )}
           </div>
         )}
       </div>
+
+      {/* 🌟 우측 하단 챗봇 플로팅 UI */}
+      <div className="fixed bottom-8 right-8 z-50 flex flex-col items-end">
+        {isChatOpen && (
+          <div className="mb-4 w-80 h-96 bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl overflow-hidden flex flex-col animate-fade-in-up">
+            <div className="bg-gradient-to-r from-blue-600 to-purple-600 p-4 text-white font-bold flex justify-between items-center">
+              <span>💬 Vibe AI 비서</span>
+              <button onClick={() => setIsChatOpen(false)} className="hover:text-gray-200">✕</button>
+            </div>
+            <div className="flex-1 p-4 bg-gray-800/50 overflow-y-auto">
+              <div className="bg-gray-700 p-3 rounded-lg text-sm text-gray-200 w-5/6 mb-2">
+                안녕하세요! 데이터 수확 중 도움이 필요하신가요? 😊 (현재 UI 데모 버전입니다)
+              </div>
+            </div>
+            <div className="p-3 border-t border-gray-700 bg-gray-900 flex gap-2">
+              <input type="text" placeholder="메시지를 입력하세요..." className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-purple-500" />
+              <button className="bg-purple-600 px-3 py-2 rounded-lg text-white hover:bg-purple-500 font-bold">→</button>
+            </div>
+          </div>
+        )}
+        
+        <button 
+          onClick={() => setIsChatOpen(!isChatOpen)}
+          className="w-14 h-14 bg-gradient-to-r from-blue-600 to-purple-600 rounded-full shadow-lg hover:shadow-xl hover:scale-105 transition-all flex items-center justify-center text-2xl text-white border-2 border-gray-800"
+        >
+          {isChatOpen ? '✕' : '🤖'}
+        </button>
+      </div>
+
     </main>
   );
 }

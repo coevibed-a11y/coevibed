@@ -20,7 +20,67 @@ class VibeClipperEngine:
         self.segmenter = SAM("models/sam2_b.pt") 
         self.segmenter.to(self.device)
         
+        # 🌟 [신규] 객체 추적기(Tracker) 초기화
+        self.reset_tracker()
+        
         print("✅ 텍스트 기반 공간 검증 엔진 시동 완료!")
+
+    def reset_tracker(self):
+        """🌟 [신규] 새로운 영상 수확을 시작할 때마다 트래커의 기억을 초기화합니다."""
+        self.tracks = [] # [{"id": int, "box": [x1,y1,x2,y2], "missed": int}]
+        self.next_track_id = 100 # ID는 100번부터 시작
+
+    def _get_track_ids(self, new_boxes):
+        """🌟 [신규] 초경량 자체 IoU(박스 겹침) 기반 객체 추적기"""
+        if len(new_boxes) == 0:
+            for t in self.tracks: t['missed'] += 1
+            return []
+
+        track_ids = []
+        new_tracks = []
+        used_track_indices = set()
+
+        for box in new_boxes:
+            best_iou = 0.15 # 최소 15% 이상 겹쳐야 동일 객체로 인정
+            best_track_idx = -1
+            
+            for i, t in enumerate(self.tracks):
+                if i in used_track_indices: continue
+                # IoU (Intersection over Union) 계산
+                xA, yA = max(box[0], t['box'][0]), max(box[1], t['box'][1])
+                xB, yB = min(box[2], t['box'][2]), min(box[3], t['box'][3])
+                interArea = max(0, xB - xA) * max(0, yB - yA)
+                boxAArea = (box[2] - box[0]) * (box[3] - box[1])
+                boxBArea = (t['box'][2] - t['box'][0]) * (t['box'][3] - t['box'][1])
+                
+                iou = interArea / float(boxAArea + boxBArea - interArea + 1e-5)
+
+                if iou > best_iou:
+                    best_iou = iou
+                    best_track_idx = i
+            
+            if best_track_idx != -1:
+                # 기존 객체와 일치하면 기존 ID 부여
+                track_id = self.tracks[best_track_idx]['id']
+                used_track_indices.add(best_track_idx)
+                new_tracks.append({"id": track_id, "box": box, "missed": 0})
+                track_ids.append(track_id)
+            else:
+                # 겹치는 게 없으면 새로운 객체로 간주하고 새 ID 발급
+                track_id = self.next_track_id
+                self.next_track_id += 1
+                new_tracks.append({"id": track_id, "box": box, "missed": 0})
+                track_ids.append(track_id)
+
+        # 잠깐 화면에서 사라졌지만(놓침) 아직 완전히 버리기엔 이른 객체 유지 (최대 3프레임 기억)
+        for i, t in enumerate(self.tracks):
+            if i not in used_track_indices:
+                t['missed'] += 1
+                if t['missed'] < 3:
+                    new_tracks.append(t)
+        
+        self.tracks = new_tracks
+        return track_ids
 
     def _calculate_intersection(self, boxA, boxB):
         """[핵심 수학] 두 박스의 교집합 면적 및 포함 비율(IoM, IoC)을 계산합니다."""
@@ -42,7 +102,7 @@ class VibeClipperEngine:
         # 대표적인 색상 HSV 범위 지정
         color_ranges = {
             "red": [([0, 100, 100], [10, 255, 255]), ([160, 100, 100], [180, 255, 255])],
-            "white": [([0, 0, 180], [180, 50, 255])], # 채도 낮고 명도 높은 영역
+            "white": [([0, 0, 180], [180, 50, 255])], 
             "black": [([0, 0, 0], [180, 255, 60])],
             "blue": [([100, 150, 0], [140, 255, 255])],
             "yellow": [([20, 100, 100], [35, 255, 255])],
@@ -50,7 +110,7 @@ class VibeClipperEngine:
         }
         
         if target_color not in color_ranges:
-            return True # 엔진 모르는 애매한 색상(beige 등)은 일단 DINO를 믿고 패스
+            return True 
 
         mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
         for (lower, upper) in color_ranges[target_color]:
@@ -58,7 +118,7 @@ class VibeClipperEngine:
             mask |= cv2.inRange(hsv, lower_np, upper_np)
             
         color_ratio = np.count_nonzero(mask) / (hsv.shape[0] * hsv.shape[1])
-        return color_ratio > 0.05 # 타겟 박스 안에 해당 색상이 5% 이상 있으면 합격!
+        return color_ratio > 0.05 
 
     def crop_target(self, image: np.ndarray, parsed_json: dict):
         rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -70,7 +130,6 @@ class VibeClipperEngine:
         
         for c in clues: c["target"] = c["target"].lower()
 
-        # 🌟 [최적화] DINO에게는 "물리적 객체(object)"만 찾아달라고 합니다. 색상은 픽셀로 검사할 거니까요!
         object_clues = [c for c in clues if c.get("type", "object") != "color"]
         search_phrases = [main_target] + [c["target"] for c in object_clues]
         dino_prompt = " . ".join(search_phrases) + " ." 
@@ -87,7 +146,6 @@ class VibeClipperEngine:
         scores = dino_results["scores"].cpu().numpy()
         labels = dino_results.get("text_labels", dino_results.get("labels"))
         
-        # 🌟 [강아지 철벽 방어] 커트라인을 0.2 -> 0.35로 상향 조정!
         valid_indices = scores >= 0.35
         boxes, scores = boxes[valid_indices], scores[valid_indices]
         labels = [labels[i] for i, valid in enumerate(valid_indices) if valid]
@@ -108,7 +166,6 @@ class VibeClipperEngine:
         
         if not main_boxes: return []
 
-        # 🟢 [2. 공간 기하학적 검증 & 픽셀 색상 검증] 
         img_area = image.shape[0] * image.shape[1] 
         valid_main_boxes, valid_main_scores = [], []
 
@@ -116,18 +173,16 @@ class VibeClipperEngine:
             w, h = m_box[2] - m_box[0], m_box[3] - m_box[1]
             if w == 0 or h == 0: continue
             
-            # 🌟 [가변 비율 필터] 배트/검은 15배 허용, 일반 객체는 4배까지만! (이쑤시개 방지)
             max_ratio = 15.0 if target_shape == "slender" else 4.0
             if (h / w > max_ratio) or (w / h > max_ratio): continue 
             if (w * h) < (img_area * 0.001): continue
 
             is_valid = True
-            geom_score_bonus = 0.0 # 💡 랭킹 보너스
+            geom_score_bonus = 0.0 
             
             for clue in clues:
                 clue_target, condition, relation = clue["target"], clue["condition"], clue.get("relation", "none")
                 
-                # 🎨 [색상 픽셀 검증]
                 if clue.get("type", "object") == "color":
                     m_crop = image[int(m_box[1]):int(m_box[3]), int(m_box[0]):int(m_box[2])]
                     color_matched = self._is_color_match(m_crop, clue_target)
@@ -138,7 +193,6 @@ class VibeClipperEngine:
                     if condition == "include" and color_matched: geom_score_bonus += 0.2
                     continue
 
-                # 📐 [물리적 객체 검증]
                 found_match = False
                 for c_box in clue_boxes_dict.get(clue_target, []):
                     iom, ioc = self._calculate_intersection(m_box, c_box)
@@ -160,29 +214,32 @@ class VibeClipperEngine:
                     
             if is_valid:
                 valid_main_boxes.append(m_box)
-                valid_main_scores.append(m_score + geom_score_bonus) # 🌟 종합 랭킹 점수
+                valid_main_scores.append(m_score + geom_score_bonus) 
 
         if not valid_main_boxes: return []
             
-        # 🌟 [지능형 NMS] DINO 확신도 + 기하학/색상 보너스 점수 합산으로 1등 뽑기
         boxes_tensor = torch.tensor(valid_main_boxes, dtype=torch.float32)
         scores_tensor = torch.tensor(valid_main_scores, dtype=torch.float32) 
         
         nms_indices = torchvision.ops.nms(boxes_tensor, scores_tensor, iou_threshold=0.6)
         final_boxes = boxes_tensor[nms_indices].numpy()
-        print(f"🎯 [공간 검증 합격] '{main_target}' 최종 객체 {len(final_boxes)}개 추출!")
+        
+        # 🌟 [신규] 최종 확정된 박스들에 Track ID 부여
+        track_ids = self._get_track_ids(final_boxes)
+        
+        print(f"🎯 [공간 검증 합격] '{main_target}' 최종 객체 {len(final_boxes)}개 추출 (Track IDs: {track_ids})")
             
-        # 🟢 [3. Segmentation] 
         seg_results = self.segmenter(image, bboxes=final_boxes, verbose=False)
         
         final_crops = []
-        for result in seg_results:
+        for idx, result in enumerate(seg_results):
             if result.masks is None: continue
             masks = result.masks.data.cpu().numpy()
             orig_boxes = result.boxes.xyxy.cpu().numpy()
             
-            for idx, mask in enumerate(masks):
-                x1, y1, x2, y2 = map(int, orig_boxes[idx])
+            # 박스 하나당 하나의 마스크라고 가정
+            for m_idx, mask in enumerate(masks):
+                x1, y1, x2, y2 = map(int, orig_boxes[m_idx])
                 crop_img = image[y1:y2, x1:x2]
                 
                 full_mask = cv2.resize(mask.astype(np.uint8), (image.shape[1], image.shape[0]))
@@ -190,7 +247,13 @@ class VibeClipperEngine:
                 
                 bgra = cv2.cvtColor(crop_img, cv2.COLOR_BGR2BGRA)
                 bgra[:, :, 3] = mask_crop * 255
-                final_crops.append(bgra)
+                
+                # 🌟 [신규] 단순 이미지가 아닌 "이미지와 ID"를 세트로 묶어서 반환 (app.py에서 파일명에 사용)
+                final_crops.append({
+                    "image": bgra,
+                    "track_id": track_ids[idx]
+                })
+                break # 한 박스에 대해 가장 첫 번째 마스크만 취함
                 
         return final_crops
 
