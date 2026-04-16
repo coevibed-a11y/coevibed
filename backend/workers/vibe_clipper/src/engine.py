@@ -102,7 +102,7 @@ class VibeClipperEngine:
         # 대표적인 색상 HSV 범위 지정
         color_ranges = {
             "red": [([0, 100, 100], [10, 255, 255]), ([160, 100, 100], [180, 255, 255])],
-            "white": [([0, 0, 180], [180, 50, 255])], 
+            "white": [([0, 0, 200], [180, 30, 255])], 
             "black": [([0, 0, 0], [180, 255, 60])],
             "blue": [([100, 150, 0], [140, 255, 255])],
             "yellow": [([20, 100, 100], [35, 255, 255])],
@@ -118,7 +118,7 @@ class VibeClipperEngine:
             mask |= cv2.inRange(hsv, lower_np, upper_np)
             
         color_ratio = np.count_nonzero(mask) / (hsv.shape[0] * hsv.shape[1])
-        return color_ratio > 0.05 
+        return color_ratio > 0.15 
 
     def crop_target(self, image: np.ndarray, parsed_json: dict):
         rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -146,7 +146,7 @@ class VibeClipperEngine:
         scores = dino_results["scores"].cpu().numpy()
         labels = dino_results.get("text_labels", dino_results.get("labels"))
         
-        valid_indices = scores >= 0.35
+        valid_indices = scores >= 0.3
         boxes, scores = boxes[valid_indices], scores[valid_indices]
         labels = [labels[i] for i, valid in enumerate(valid_indices) if valid]
 
@@ -198,7 +198,7 @@ class VibeClipperEngine:
                     iom, ioc = self._calculate_intersection(m_box, c_box)
                     
                     if relation == "wearing":
-                        if ioc > 0.8: found_match = True; geom_score_bonus += 0.3; break
+                        if ioc > 0.5: found_match = True; geom_score_bonus += 0.3; break
                     elif relation in ["inside", "holding"]:
                         if iom > 0.2 or ioc > 0.2: found_match = True; geom_score_bonus += 0.2; break
                     elif relation == "next_to":
@@ -218,7 +218,7 @@ class VibeClipperEngine:
 
         if not valid_main_boxes: return []
             
-        boxes_tensor = torch.tensor(valid_main_boxes, dtype=torch.float32)
+        boxes_tensor = torch.tensor(np.array(valid_main_boxes), dtype=torch.float32)
         scores_tensor = torch.tensor(valid_main_scores, dtype=torch.float32) 
         
         nms_indices = torchvision.ops.nms(boxes_tensor, scores_tensor, iou_threshold=0.6)

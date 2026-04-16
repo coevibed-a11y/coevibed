@@ -7,7 +7,11 @@ class YouTubeStreamer:
         self.ydl_opts = {
             'format': 'best[ext=mp4]/best',
             'quiet': True,
-            'noplaylist': True
+            'noplaylist': True,
+            'compat_opts': {'no-direct-merge'},
+            # 🌟 파이썬 라이브러리 표준 방식: 리스트 형태로 직접 전달
+            'remote_components': ['ejs:github'], 
+            'allow_untracked': True,
         }
 
     def get_direct_url(self, youtube_url):
