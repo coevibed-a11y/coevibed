@@ -122,7 +122,14 @@ async def mine_video(request: CropRequest, x_api_key: str = Header(None)):
             # 1. Gemini 분석
             try:
                 parsed_data = ai_service.parse_semantic(request.target_label)
+                
+                # 🌟 [신규 방어막] 분석이 완전히 실패하여 None이 반환되었을 경우 즉시 중단
+                if not parsed_data:
+                    logger.warning("⚠️ Gemini 분석 최종 실패. 무지성 수확을 방지하기 위해 작업을 차단합니다.")
+                    return {"status": "error", "message": "현재 AI 서버 수요가 많아 분석이 불가능합니다. 1분 후 다시 시도해주세요."}
+                    
                 logger.info(f"🧠 Gemini 분석 결과: {parsed_data}")
+                
             except Exception as e:
                 logger.error(f"Gemini 분석 실패: {e}")
                 return {"status": "error", "message": "타겟 분석 중 오류가 발생했습니다."}

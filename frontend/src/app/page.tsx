@@ -31,7 +31,7 @@ export default function Home() {
             <span className="text-5xl mb-4 group-hover:scale-110 transition-transform duration-300">✂️</span>
             <h2 className="text-2xl font-bold text-gray-200 group-hover:text-blue-400 transition-colors">Vibe-Clipper</h2>
             <p className="text-sm text-gray-500 mt-2 text-center">
-              자연어 기반 이미지 크롭 파이프라인
+              자연어 기반 이미지 크롭 시스템
             </p>
           </Link>
 

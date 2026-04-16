@@ -102,10 +102,19 @@ export default function ClipperForm(props: ClipperFormProps) {
         </p>
       </div>
 
+      {/* 에러 및 서버 지연 메시지 출력 영역 */}
       {props.error && (
-        <div className="p-4 bg-red-900/50 border border-red-500/50 text-red-200 rounded-lg text-sm">
-          {props.error}
-        </div>
+        props.error.includes('수요가 많아') ? (
+          // AI 서버 지연 에러 (주황색 테마 & 펄스 애니메이션 추가)
+          <div className="p-4 bg-amber-900/50 border border-amber-500/50 text-amber-200 rounded-lg text-sm flex items-center gap-2 animate-pulse">
+            ⚠️ {props.error}
+          </div>
+        ) : (
+          // 일반 에러 (기존 빨간색 테마)
+          <div className="p-4 bg-red-900/50 border border-red-500/50 text-red-200 rounded-lg text-sm">
+            ❌ {props.error}
+          </div>
+        )
       )}
 
       {/* 4층: 수확 버튼 */}

@@ -200,7 +200,7 @@ export default function Home() {
           <h1 className="text-4xl font-extrabold bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">
             Vibe-Clipper V2
           </h1>
-          <p className="text-gray-400">객체 추적 기반 스마트 선별 수확 시스템</p>
+          <p className="text-gray-400">자연어 기반 이미지 크롭 시스템</p>
         </header>
 
         {/* 🌟 1. 입력 폼 컴포넌트 */}

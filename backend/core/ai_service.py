@@ -83,7 +83,7 @@ class AIService:
                 time.sleep(wait_time)
         
         print(f"❌ [AIService] 최종 실패: 분석을 건너뜁니다.")
-        return {"main_target": "object", "clues": []}
+        return None
     
     # 🌟 1번 문제 해결: 클래스 안쪽으로 들여쓰기 완료!
     def chat_with_vibe_assistant(self, message: str, current_page: str, has_data: bool, history: list = None) -> str:
